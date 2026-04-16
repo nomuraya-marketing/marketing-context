@@ -63,7 +63,19 @@ with open(index_file, 'w', encoding='utf-8') as f:
     for e in entries:
         f.write(json.dumps(e, ensure_ascii=False) + '\n')
 
+with open(index_file, 'w', encoding='utf-8') as f:
+    for e in entries:
+        f.write(json.dumps(e, ensure_ascii=False) + '\n')
+
 print(f"[build-index] {len(entries)}件のエントリを書き込みました")
+
+# chunks.jsonl の統計も表示
+chunks_file = os.path.join(os.path.dirname(index_file), 'chunks.jsonl')
+if os.path.exists(chunks_file):
+    chunks = [json.loads(l) for l in open(chunks_file) if l.strip()]
+    total_chars = sum(c['char_count'] for c in chunks)
+    avg_chars = total_chars // len(chunks) if chunks else 0
+    print(f"[build-index] chunks: {len(chunks)}件 / 総文字数: {total_chars:,} / 平均: {avg_chars}文字/chunk")
 PYEOF
 
 echo "[build-index] 完了: $INDEX_FILE"
