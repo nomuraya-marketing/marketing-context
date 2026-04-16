@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # summarize.sh <VIDEO_ID>
-# 1動画のトランスクリプトを読み込み、Claude CLIで要約してsummaries/に保存
-# LLM呼び出しは1回のみ。ループ禁止ルール準拠。
+# トランスクリプトをスクリプトで前処理してsummaries/に保存する
+# LLM不使用（aranobot知見: クリーニングはスクリプトで十分）
+# カテゴリ分類はタイトルキーワードマッチによる仮分類
 
 set -euo pipefail
 
@@ -19,92 +20,121 @@ fi
 RAW_FILE="$RAW_DIR/${VIDEO_ID}.json"
 if [[ ! -f "$RAW_FILE" ]]; then
   echo "[summarize] raw データなし: $RAW_FILE" >&2
-  echo "先に youtube-fetcher/scripts/export-to-context.sh を実行してください" >&2
   exit 1
 fi
 
 SUMMARY_FILE="$SUMMARY_DIR/${VIDEO_ID}.md"
 if [[ -f "$SUMMARY_FILE" ]]; then
-  echo "[summarize] スキップ（要約済み）: $VIDEO_ID"
+  echo "[summarize] スキップ（処理済み）: $VIDEO_ID"
   exit 0
 fi
 
-# メタデータ取得
-TITLE=$(python3 -c "import json; d=json.load(open('$RAW_FILE')); print(d['title'])")
-UPLOAD_DATE=$(python3 -c "import json; d=json.load(open('$RAW_FILE')); print(d.get('upload_date',''))")
-URL=$(python3 -c "import json; d=json.load(open('$RAW_FILE')); print(d.get('url',''))")
-TRANSCRIPT=$(python3 -c "import json; d=json.load(open('$RAW_FILE')); print(d.get('transcript','')[:8000])")
+python3 <<PYEOF
+import json, re, os
+from datetime import date
 
-echo "[summarize] 要約中: $VIDEO_ID - $TITLE"
+raw_path = "$RAW_FILE"
+out_path = "$SUMMARY_FILE"
 
-# プロンプトを一時ファイルに書く
-PROMPT_FILE=$(mktemp)
-trap 'rm -f "$PROMPT_FILE"' EXIT
+with open(raw_path, encoding='utf-8') as f:
+    data = json.load(f)
 
-cat > "$PROMPT_FILE" <<PROMPT
-以下はYouTubeチャンネル「マーケティング侍の非常識なビジネス学」（りゅう先生）の動画トランスクリプトです。
-マーケティング初心者が実践できるノウハウを抽出してください。
+title = data.get('title', '')
+url = data.get('url', f"https://www.youtube.com/watch?v=$VIDEO_ID")
+upload_date = data.get('upload_date', '')
+transcript = data.get('transcript', '')
 
-## 信頼度ポリシー（必ず守ること）
+# --- カテゴリ仮分類（キーワードマッチ） ---
+CATEGORY_KEYWORDS = {
+    '集客':              ['集客', '見込み客', 'リード', 'アクセス', '認知', 'SEO', 'MEO'],
+    '販売':              ['販売', '売上', '成約', 'クロージング', 'セールス', '購入', 'LP', 'ランディングページ'],
+    '商品設計':          ['商品設計', 'コンセプト', '価値設計', '商品開発', 'サービス設計'],
+    'YouTube戦略':       ['YouTube', 'チャンネル', '動画', 'サムネ', 'タイトル', '再生', '登録'],
+    'ニューロマーケティング': ['行動経済学', '心理', 'バイアス', 'ニューロ', '脳', '感情', 'イエスセット'],
+    'SNS':               ['インスタ', 'Instagram', 'X(Twitter)', 'SNS', 'TikTok', 'threads', 'Threads'],
+}
 
-- **数字は使わない**: 売上〇倍・成約率〇%・登録者〇万人などの数字は出力に含めない（自称・検証不能のため）
-- **視点・手法・考え方を中心に抽出する**: なぜそうするか・どうやるかのロジックを重視
-- **対談・ロールプレイは流れごと抽出**: 会話のやりとりで伝わるノウハウは省略しない
+categories = []
+combined = title + ' ' + transcript[:2000]
+for cat, keywords in CATEGORY_KEYWORDS.items():
+    if any(kw in combined for kw in keywords):
+        categories.append(cat)
+if not categories:
+    categories = ['その他']
+
+# --- トランスクリプト前処理 ---
+# 1. フィラー除去
+filler_patterns = [
+    r'えー+', r'あー+', r'まあ+', r'んー+', r'うー+',
+    r'はい、はい', r'そうですね、そうですね',
+]
+cleaned = transcript
+for pat in filler_patterns:
+    cleaned = re.sub(pat, '', cleaned)
+
+# 2. 重複連続行を1行に圧縮
+lines = cleaned.splitlines()
+deduped = []
+prev = ''
+for line in lines:
+    line = line.strip()
+    if line and line != prev:
+        deduped.append(line)
+        prev = line
+
+# 3. 段落分割（。や！?で区切り、N文字以上を1段落とする）
+text = '\n'.join(deduped)
+sentences = re.split(r'([。！？!?])', text)
+paragraphs = []
+buf = ''
+for i, s in enumerate(sentences):
+    buf += s
+    if s in '。！？!?' and len(buf) > 80:
+        paragraphs.append(buf.strip())
+        buf = ''
+if buf.strip():
+    paragraphs.append(buf.strip())
+
+cleaned_text = '\n\n'.join(paragraphs)
+
+# --- Markdown出力 ---
+today = date.today().isoformat()
+cats_str = '[' + ', '.join(categories) + ']'
+
+content = f"""---
+id: $VIDEO_ID
+title: {title}
+upload_date: {upload_date}
+url: {url}
+categories: {cats_str}
+key_concepts: []
+summarized_at: {today}
+processed_by: script
+---
 
 ## 動画情報
-- タイトル: $TITLE
-- URL: $URL
 
-## トランスクリプト
-$TRANSCRIPT
+- **タイトル**: {title}
+- **URL**: {url}
+- **カテゴリ（仮）**: {', '.join(categories)}
 
-## 出力形式（以下のMarkdownで出力してください）
+## トランスクリプト（前処理済み）
 
----
-id: $VIDEO_ID
-title: $TITLE
-upload_date: $UPLOAD_DATE
-url: $URL
-categories: [カテゴリ1, カテゴリ2]
-key_concepts: [概念1, 概念2]
-summarized_at: $(date +%Y-%m-%d)
----
+{cleaned_text}
+"""
 
-## 概要
+os.makedirs(os.path.dirname(out_path), exist_ok=True)
+with open(out_path, 'w', encoding='utf-8') as f:
+    f.write(content)
 
-（この動画で伝えたいことを100-200字で。数字を使わず内容で説明）
+print(f"[summarize] 保存: {out_path} ({len(paragraphs)}段落)")
+PYEOF
 
-## 主要ノウハウ
+echo "[summarize] 完了: $VIDEO_ID"
 
-### ノウハウ1のタイトル
-（具体的な手法・考え方。なぜ機能するかのロジックを含める）
-
-### ノウハウ2のタイトル
-（同上）
-
-## 実践ポイント
-
-- 明日からできるアクション1
-- 明日からできるアクション2
-
-## キーフレーズ
-
-動画内で特に重要な発言・視点を1-2つ引用。（数字を含む発言は除く）
-
----
-
-categoriesは以下から選んでください（複数可）: 集客, 販売, 商品設計, YouTube戦略, ニューロマーケティング, SNS, その他
-PROMPT
-
-# Claude CLI で要約（1回のみ呼び出し）
-claude --model claude-haiku-4-5-20251001 -p "$(cat "$PROMPT_FILE")" > "$SUMMARY_FILE"
-
-echo "[summarize] 保存: $SUMMARY_FILE"
-
-# raw/transcripts/<VIDEO_ID>.json の summarized フラグを更新
+# raw の summarized フラグ更新
 python3 - "$RAW_FILE" <<'PYEOF'
 import json, sys
-
 path = sys.argv[1]
 with open(path, encoding='utf-8') as f:
     data = json.load(f)
@@ -112,5 +142,3 @@ data['summarized'] = True
 with open(path, 'w', encoding='utf-8') as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
 PYEOF
-
-echo "[summarize] 完了: $VIDEO_ID"
