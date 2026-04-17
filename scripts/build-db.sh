@@ -39,8 +39,7 @@ cur.execute('''
     )
 ''')
 
-# FTS5全文検索テーブル（content-table modeでchunksテーブルを参照）
-# content-table modeにすることでsnippet()とJOINが正しく動作する
+# FTS5 trigram（3文字以上の語用）
 cur.execute('''
     CREATE VIRTUAL TABLE chunks_fts USING fts5(
         text,
@@ -49,6 +48,20 @@ cur.execute('''
         tokenize='trigram'
     )
 ''')
+
+# FTS5 bigram（2文字語用: 顧客・売上・広告・戦略など）
+# bigramsはchunksテーブルのbigramsカラムを参照
+cur.execute('''
+    CREATE VIRTUAL TABLE chunks_bi USING fts5(
+        bigrams,
+        content='chunks',
+        content_rowid='rowid'
+    )
+''')
+
+def make_bigrams(text):
+    """テキストをbigram（2文字ngram）スペース区切りに変換"""
+    return ' '.join(text[i:i+2] for i in range(len(text) - 1))
 
 with open(chunks_file, encoding='utf-8') as f:
     rows = []
@@ -65,8 +78,23 @@ with open(chunks_file, encoding='utf-8') as f:
 
 cur.executemany('INSERT INTO chunks VALUES (?,?,?,?,?,?,?,?)', rows)
 
-# FTSインデックスを構築（content-table modeはINSERT後に再構築）
+# trigram FTSインデックス
 cur.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
+
+# bigram FTS: content=''（インデックスのみ、テキスト非保存）で軽量化
+# chunksテーブルとはrowid連携で紐付け
+cur.execute('''DROP TABLE chunks_bi''')
+cur.execute('''
+    CREATE VIRTUAL TABLE chunks_bi USING fts5(
+        bigrams,
+        content='',
+        tokenize='ascii'
+    )
+''')
+# bigramsはINSERT時に生成してFTSに直接投入（rowidはchunksと1:1対応）
+cur.execute("SELECT rowid, text FROM chunks ORDER BY rowid")
+bi_rows = [(row[0], make_bigrams(row[1])) for row in cur.fetchall()]
+cur.executemany("INSERT INTO chunks_bi(rowid, bigrams) VALUES (?,?)", bi_rows)
 
 con.commit()
 

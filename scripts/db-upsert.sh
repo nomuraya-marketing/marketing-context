@@ -119,6 +119,9 @@ with open(chunks_file, 'w', encoding='utf-8') as f:
     for c in existing + new_chunks:
         f.write(json.dumps(c, ensure_ascii=False) + '\n')
 
+def make_bigrams(text):
+    return ' '.join(text[i:i+2] for i in range(len(text) - 1))
+
 # --- chunks.db をupsert（差分: rowid指定でFTS削除 → chunks削除 → 再INSERT）---
 if not os.path.exists(db_file):
     print(f'[db-upsert] DBが存在しません。build-db.sh を先に実行してください: {db_file}', file=sys.stderr)
@@ -127,11 +130,12 @@ if not os.path.exists(db_file):
 con = sqlite3.connect(db_file)
 cur = con.cursor()
 
-# FTSからrowid指定で削除（content-table modeはchunksを先に参照してからdelete）
+# FTS・bigram FTSからrowid指定で削除
 cur.execute('SELECT rowid, text FROM chunks WHERE video_id = ?', (video_id,))
 old_rows = cur.fetchall()
 for rowid, text in old_rows:
     cur.execute('INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES(?, ?, ?)', ('delete', rowid, text))
+    # chunks_bi は content='' なので delete コマンド不要（rowidでINSERTし直せばOK）
 
 # chunksから削除
 cur.execute('DELETE FROM chunks WHERE video_id = ?', (video_id,))
@@ -144,9 +148,11 @@ for c in new_chunks:
         (c['chunk_id'], c['video_id'], c['chunk_index'],
          c['total_chunks'], c['title'], c['url'], c['char_count'], c['text'])
     )
-    # 追加したrowidを取得してFTSにも登録
     new_rowid = cur.lastrowid
+    # trigram FTS に登録
     cur.execute('INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)', (new_rowid, c['text']))
+    # bigram FTS に登録
+    cur.execute('INSERT INTO chunks_bi(rowid, bigrams) VALUES (?, ?)', (new_rowid, make_bigrams(c['text'])))
 
 con.commit()
 
