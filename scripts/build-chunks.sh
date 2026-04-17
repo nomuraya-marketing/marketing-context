@@ -20,8 +20,8 @@ raw_dir = "$RAW_DIR"
 chunks_file = "$CHUNKS_FILE"
 target_id = "$TARGET_ID"
 
-MAX_CHARS = 2000
-OVERLAP   = 300
+MAX_CHARS = 1200
+OVERLAP   = 200
 MIN_CHARS = 50   # 短すぎるチャンクは除外（aranobot準拠）
 
 # 独立行として現れる相槌・フィラー（budoux分割後の1行がこれだけの行を除去）

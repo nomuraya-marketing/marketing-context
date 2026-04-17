@@ -31,8 +31,8 @@ raw_json  = sys.argv[2]
 chunks_file = sys.argv[3]
 db_file   = sys.argv[4]
 
-MAX_CHARS = 2000
-OVERLAP   = 300
+MAX_CHARS = 1200
+OVERLAP   = 200
 MIN_CHARS = 50
 
 STANDALONE_FILLERS = {
