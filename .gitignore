@@ -5,5 +5,6 @@ __pycache__/
 *.pyc
 .env
 
-# SQLite DB（build-db.shで随時再構築。chunks.jsonlをgit管理すれば復元可能）
+# 生成物（raw JSONとbuild-*.shで完全復元可能）
+knowledge/chunks.jsonl
 knowledge/chunks.db
