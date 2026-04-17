@@ -26,6 +26,57 @@ def _make_bigrams(text: str) -> str:
     return ' '.join(text[i:i+2] for i in range(len(text) - 1))
 
 
+def _extract_search_terms(query: str) -> tuple[list[str], list[str]]:
+    """
+    クエリから検索キーワードを抽出する。
+    漢字・カタカナ連続と英数字トークンを抽出し、助詞・助動詞・ひらがなのみの語を除外する。
+
+    Returns:
+        (trigram_terms, bigram_terms)
+        trigram_terms: 3文字以上の語（FTS5 trigramで検索）
+        bigram_terms:  2文字の語（bigram FTSで検索）
+    """
+    import re
+
+    # 記号・句読点を除去
+    cleaned = re.sub(r'[？！。、・…「」『』【】\(\)（）\?\!\s]', '', query)
+
+    # 連続する漢字+カタカナ+英数字のまとまりを抽出（ひらがなで分断）
+    # さらに漢字/カタカナの切り替わりで分割（「顧客リピート」→「顧客」+「リピート」）
+    raw_tokens = re.findall(
+        r'[A-Za-z0-9０-９a-zA-Z]+|'          # 英数字
+        r'[\u4e00-\u9fff\u30a0-\u30ff]+',     # 漢字+カタカナの連続
+        cleaned
+    )
+    tokens = []
+    for t in raw_tokens:
+        # 漢字とカタカナが混在する場合は境界で分割
+        # 例: 「顧客リピート」→ 「顧客」「リピート」
+        parts = re.findall(r'[A-Za-z0-9０-９]+|[\u4e00-\u9fff]+|[\u30a0-\u30ff]+', t)
+        tokens.extend(parts if parts else [t])
+
+    trigram_terms = []
+    bigram_terms = []
+
+    for t in tokens:
+        if not t:
+            continue
+        if len(t) >= 3:
+            trigram_terms.append(t)
+        elif len(t) == 2:
+            bigram_terms.append(t)
+        # 1文字は無視（ノイズ）
+
+    # 抽出できない場合はクエリをそのまま使うフォールバック
+    if not trigram_terms and not bigram_terms:
+        if len(cleaned) >= 3:
+            trigram_terms = [cleaned]
+        elif len(cleaned) == 2:
+            bigram_terms = [cleaned]
+
+    return trigram_terms, bigram_terms
+
+
 def _get_con():
     con = sqlite3.connect(_DB_PATH)
     con.row_factory = sqlite3.Row
@@ -55,9 +106,20 @@ def search(
     cur = con.cursor()
     results: dict[str, dict] = {}
 
-    # --- trigram 検索（3文字以上で有効）---
-    if len(query) >= 3:
-        snip_expr = f"snippet(chunks_fts, 0, '', '', '...', {snippet_tokens})"
+    trigram_terms, bigram_terms = _extract_search_terms(query)
+
+    # クエリが短い単語なら直接使う（単語検索: 「顧客」「売上」等）
+    if not trigram_terms and not bigram_terms:
+        # フォールバック: クエリをそのまま使う
+        if len(query) >= 3:
+            trigram_terms = [query]
+        else:
+            bigram_terms = [query]
+
+    snip_expr = f"snippet(chunks_fts, 0, '', '', '...', {snippet_tokens})"
+
+    # --- trigram 検索（語ごとにOR検索してマージ）---
+    for term in trigram_terms:
         sql = f'''
             SELECT c.chunk_id, c.title, c.url,
                    {snip_expr} AS snip,
@@ -69,13 +131,20 @@ def search(
             ORDER BY rank
             LIMIT ?
         '''
-        cur.execute(sql, (query, top_k))
-        for row in cur.fetchall():
-            results[row['chunk_id']] = dict(row)
+        try:
+            cur.execute(sql, (term, top_k))
+            for row in cur.fetchall():
+                cid = row['chunk_id']
+                if cid not in results or (row['score'] or 0) < (results[cid].get('score') or 0):
+                    results[cid] = dict(row)
+        except Exception:
+            pass
 
-    # --- bigram 検索（2文字語を補完）---
-    bi_query = _make_bigrams(query)
-    if bi_query:
+    # --- bigram 検索（2文字語をOR検索）---
+    for term in bigram_terms:
+        bi_query = _make_bigrams(term)
+        if not bi_query:
+            continue
         sql = f'''
             SELECT c.chunk_id, c.title, c.url,
                    {"c.text" if full_text else "NULL"} AS text,
@@ -86,12 +155,16 @@ def search(
             ORDER BY rank
             LIMIT ?
         '''
-        cur.execute(sql, (bi_query, top_k))
-        for row in cur.fetchall():
-            if row['chunk_id'] not in results:
-                r = dict(row)
-                r['snip'] = None
-                results[row['chunk_id']] = r
+        try:
+            cur.execute(sql, (bi_query, top_k))
+            for row in cur.fetchall():
+                cid = row['chunk_id']
+                if cid not in results:
+                    r = dict(row)
+                    r['snip'] = None
+                    results[cid] = r
+        except Exception:
+            pass
 
     con.close()
 
