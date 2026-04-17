@@ -39,6 +39,26 @@ INLINE_FILLER_PATTERNS = [
     r'(なるほど){2,}',        # 「なるほどなるほど」
 ]
 
+# チャンネル固有定型句（除去対象）
+# Whisper誤認識で198種以上のバリエーションがあるため広めのワイルドカードで対応
+# 実測バリエーション例: 「戦国自体」「国体」「宣。」「宣告」等
+BOILERPLATE_PATTERNS = [
+    # イントロ定型句: 「時は令和」〜「マーケティング侍」を一括除去
+    # NOTE: bashのheredoc(<<PYEOF)では\sが展開されるため.を使用
+    r'時は令和.{0,100}?マーケティング侍.{0,50}?(り|龍|竜)です',
+    # 「のりです」まで届かないケースのフォールバック
+    r'時は令和.{0,80}?マーケティング侍',
+    # 自己紹介だけ残った場合 / 残骸パターン
+    r'の非常識な.{0,20}?マーケティング侍',
+    r'(ちゃ?お?、?)?マーケティング侍の?.{0,5}(り|龍|竜)(です|でございます)',
+    # チャンネル説明
+    r'このチャンネルでは.{0,10}?(実践的|今すぐ使える).{0,30}?(シェア|公開|してい)',
+    r'このチャンネルではですね.{0,50}?(チャンネル|していく)',
+    # アウトロ
+    r'チャンネル登録よろしくお願いします',
+    r'いいね.{0,3}ボタン.{0,5}押して.{0,20}',
+]
+
 def clean_transcript(raw_text):
     """budoux分割済みテキストをLLM向けにクレンジング"""
     # Step1: 独立行フィラーを除去（budoux改行があるうちに処理）
@@ -46,14 +66,19 @@ def clean_transcript(raw_text):
     cleaned_lines = [l for l in lines if l.strip() not in STANDALONE_FILLERS]
     removed_lines = len(lines) - len(cleaned_lines)
 
-    # Step2: 改行除去（budoux改行を結合して連続テキストに戻す）
+    # Step2: 改行除去（連続テキストに戻す）
+    # ※定型句は改行で分断されているため、改行除去後に適用する必要がある
     text = ''.join(cleaned_lines)
 
-    # Step3: 連続相槌パターンを除去
+    # Step3: 定型句除去（改行除去後に適用）
+    for pat in BOILERPLATE_PATTERNS:
+        text = re.sub(pat, '', text)
+
+    # Step4: 連続相槌パターンを除去
     for pat in INLINE_FILLER_PATTERNS:
         text = re.sub(pat, '', text)
 
-    # Step4: 空白の正規化（連続スペース除去）
+    # Step5: 空白の正規化（連続スペース除去）
     text = re.sub(r' {2,}', ' ', text).strip()
 
     return text, removed_lines
