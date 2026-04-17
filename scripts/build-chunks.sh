@@ -24,6 +24,40 @@ MAX_CHARS = 2000
 OVERLAP   = 300
 MIN_CHARS = 50   # 短すぎるチャンクは除外（aranobot準拠）
 
+# 独立行として現れる相槌・フィラー（budoux分割後の1行がこれだけの行を除去）
+STANDALONE_FILLERS = {
+    'はい', 'うん', 'えー', 'あー', 'まあ', 'ねー', 'ねえ',
+    'そう', 'なる', 'うむ', 'おー', 'へー',
+}
+
+# 改行除去後に除去する連続相槌パターン
+# 「はいはい」「そうですねはい」「なるほどなるほど」等
+INLINE_FILLER_PATTERNS = [
+    r'(はい){2,}',           # 「はいはいはい」
+    r'(うんうん)+',           # 「うんうんうん」
+    r'(そうですね){2,}',      # 「そうですねそうですね」
+    r'(なるほど){2,}',        # 「なるほどなるほど」
+]
+
+def clean_transcript(raw_text):
+    """budoux分割済みテキストをLLM向けにクレンジング"""
+    # Step1: 独立行フィラーを除去（budoux改行があるうちに処理）
+    lines = raw_text.split('\n')
+    cleaned_lines = [l for l in lines if l.strip() not in STANDALONE_FILLERS]
+    removed_lines = len(lines) - len(cleaned_lines)
+
+    # Step2: 改行除去（budoux改行を結合して連続テキストに戻す）
+    text = ''.join(cleaned_lines)
+
+    # Step3: 連続相槌パターンを除去
+    for pat in INLINE_FILLER_PATTERNS:
+        text = re.sub(pat, '', text)
+
+    # Step4: 空白の正規化（連続スペース除去）
+    text = re.sub(r' {2,}', ' ', text).strip()
+
+    return text, removed_lines
+
 def make_chunks(text, max_chars, overlap):
     """オーバーラップ付きチャンク分割（aranobot方式）"""
     chunks = []
@@ -65,9 +99,12 @@ for fname in raw_files:
     with open(fpath, encoding="utf-8") as f:
         data = json.load(f)
 
-    transcript = data.get("transcript", "").strip()
-    if not transcript or transcript == "# NO_SUBTITLE":
+    raw_transcript = data.get("transcript", "").strip()
+    if not raw_transcript or raw_transcript == "# NO_SUBTITLE":
         continue
+
+    # クレンジング適用
+    transcript, removed_lines = clean_transcript(raw_transcript)
 
     title = data.get("title", "")
     url   = data.get("url", f"https://www.youtube.com/watch?v={video_id}")
@@ -85,7 +122,7 @@ for fname in raw_files:
             "char_count": len(chunk_text),
         })
 
-    print(f"[build-chunks] {video_id}: {len(transcript)}文字 → {len(chunks)}チャンク")
+    print(f"[build-chunks] {video_id}: {len(raw_transcript)}文字 → {len(transcript)}文字 (-{removed_lines}行) → {len(chunks)}チャンク")
 
 all_chunks = existing + new_chunks
 with open(chunks_file, "w", encoding="utf-8") as f:
