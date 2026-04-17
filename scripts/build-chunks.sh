@@ -97,7 +97,16 @@ def make_chunks(text, max_chars, overlap):
         start = end - overlap
     return chunks
 
-# 既存チャンクを読み込み（同じvideo_idは上書き）
+# 処理対象のrawファイルを決定
+raw_files = sorted(
+    f for f in os.listdir(raw_dir)
+    if f.endswith(".json") and (not target_id or f == target_id + ".json")
+)
+
+# 今回再生成対象のvideo_id集合（これらは既存チャンクから除外して上書き）
+regenerate_ids = {f.replace(".json", "") for f in raw_files}
+
+# 既存チャンクを読み込み（今回再生成対象のvideo_idは除外＝上書き扱い）
 existing = []
 if os.path.exists(chunks_file):
     with open(chunks_file, encoding="utf-8") as f:
@@ -106,15 +115,9 @@ if os.path.exists(chunks_file):
             if not line:
                 continue
             c = json.loads(line)
-            if target_id and c.get("video_id") == target_id:
-                continue  # 上書き対象はスキップ
+            if c.get("video_id") in regenerate_ids:
+                continue  # 再生成対象はスキップ（重複防止）
             existing.append(c)
-
-# 処理対象のrawファイルを決定
-raw_files = sorted(
-    f for f in os.listdir(raw_dir)
-    if f.endswith(".json") and (not target_id or f == target_id + ".json")
-)
 
 new_chunks = []
 for fname in raw_files:
